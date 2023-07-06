@@ -20,4 +20,4 @@ jobs:
               "pr_link": "${{ github.event.pull_request.html_url }}"
             }
         env:
-          SLACK_WEBHOOK_URL: ${{ secrets.https://hooks.slack.com/services/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 }}
+          SLACK_WEBHOOK_URL: ${{ https://hooks.slack.com/services/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 }}
