@@ -1,8 +1,4 @@
 # mwong-test-repo
 this repo is used for testing purposes 
 
-
-another test
-
-
-another another test
+testing with NEW_SLACK_NOTICE
