@@ -20,4 +20,4 @@ jobs:
               "pr_link": "${{ github.event.pull_request.html_url }}"
             }
         env:
-          SLACK_WEBHOOK_URL: ${{ secrets.NEW_SLACK_NOTICE }}
+          SLACK_WEBHOOK_URL: ${{ secrets.SLACK_WEBHOOK_URL }}
