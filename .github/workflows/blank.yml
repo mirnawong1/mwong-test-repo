@@ -1,3 +1,5 @@
+## this workflow uses the github action here: https://github.com/marketplace/actions/slack-pr-open-notification
+
 name: Send Slack Notifications
 
 on: 
@@ -24,8 +26,9 @@ jobs:
         PULL_REQUEST_BASE_BRANCH_OWNER: ${{ github.event.pull_request.base.repo.owner.login }}
         PULL_REQUEST_BASE_BRANCH_NAME : ${{ github.event.pull_request.base.ref }}
         IS_SEND_HERE_MENTION : true
-        MAKE_PRETTY : false
+        MAKE_PRETTY : true
         MAKE_COMPACT : false
+        SEND_GROUP_ID_MENTIONS: U051VC0LGUV
       uses: jun3453/slack-pr-open-notification-action@v1.3.0
     
     
