@@ -5,7 +5,7 @@ on:
     types: [labeled]
 jobs:
   slackNotification:
-    if: contains(github.event.pull_request.labels.*.name, ‘ready for review’)
+    if: contains(github.event.pull_request.labels.*.name, 'ready for review')
     runs-on: ubuntu-latest
     steps:
     - name: Notify slack pr open
@@ -24,5 +24,5 @@ jobs:
         IS_SEND_HERE_MENTION : false
         MAKE_PRETTY : false
         MAKE_COMPACT : false
-        SEND_GROUP: ‘@docsteam’
+        SEND_GROUP: '@docsteam'
       uses: jun3453/slack-pr-open-notification-action@v1.3.0
