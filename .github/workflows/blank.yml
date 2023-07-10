@@ -10,18 +10,18 @@ jobs:
     steps:
     - name: Notify slack pr open
       env:
-        SLACK_WEBHOOK_URL : ${{ secrets.SLACK_WEBHOOK_URL }}
-        PULL_REQUEST_BODY : Hi @docsteam, PR ${{ github.event.pull_request.number }} is ready for review
-        PULL_REQUEST_NUMBER : ${{ github.event.pull_request.number }}
-        PULL_REQUEST_TITLE : ${{ github.event.pull_request.title }}
-        PULL_REQUEST_AUTHOR_NAME : ${{ github.event.pull_request.user.login }}
-        PULL_REQUEST_URL : ${{ github.event.pull_request.html_url }}
+        SLACK_WEBHOOK_URL: ${{ secrets.SLACK_WEBHOOK_URL }}
+        PULL_REQUEST_BODY: Hi @docsteam, PR ${{ github.event.pull_request.number }} is ready for review
+        PULL_REQUEST_NUMBER: ${{ github.event.pull_request.number }}
+        PULL_REQUEST_TITLE: ${{ github.event.pull_request.title }}
+        PULL_REQUEST_AUTHOR_NAME: ${{ github.event.pull_request.user.login }}
+        PULL_REQUEST_URL: ${{ github.event.pull_request.html_url }}
         PULL_REQUEST_COMPARE_BRANCH_OWNER: ${{ github.event.pull_request.head.repo.owner.login }}
-        PULL_REQUEST_COMPARE_BRANCH_NAME : ${{ github.event.pull_request.head.ref }}
+        PULL_REQUEST_COMPARE_BRANCH_NAME: ${{ github.event.pull_request.head.ref }}
         PULL_REQUEST_BASE_BRANCH_OWNER: ${{ github.event.pull_request.base.repo.owner.login }}
-        PULL_REQUEST_BASE_BRANCH_NAME : ${{ github.event.pull_request.base.ref }}
+        PULL_REQUEST_BASE_BRANCH_NAME: ${{ github.event.pull_request.base.ref }}
         IS_SEND_HERE_MENTION: false
-        SEND_USER_ID_MENTIONS : U051VC0LGUV
-        MAKE_PRETTY : true
-        MAKE_COMPACT : false
+        SEND_USER_ID_MENTIONS: U051VC0LGUV
+        MAKE_PRETTY: true
+        MAKE_COMPACT: false
       uses: jun3453/slack-pr-open-notification-action@v1.3.0
