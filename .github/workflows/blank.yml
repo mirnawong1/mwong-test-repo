@@ -12,6 +12,8 @@ jobs:
     steps:
     - name: actions
       uses: actions/checkout@v2
+    - name: addl
+      uses: jun3453/slack-pr-open-notification-action@v1.3.0
       env:
         SLACK_WEBHOOK: ${{ secrets.SLACK_WEBHOOK_URL }}
         SLACK_CHANNEL: general
@@ -22,3 +24,5 @@ jobs:
         PULL_REQUEST_BODY : ${{ github.event.pull_request.body }}
         MAKE_PRETTY: false
         
+
+
