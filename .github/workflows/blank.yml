@@ -24,5 +24,5 @@ jobs:
         IS_SEND_HERE_MENTION : false
         MAKE_PRETTY : false
         MAKE_COMPACT : false
-        SEND_USER_ID_MENTIONS: U051VC0LGUV, U051VC0LGUV
+        SEND_USER_ID_MENTIONS: U051VC0LGUV
       uses: jun3453/slack-pr-open-notification-action@v1.3.0
