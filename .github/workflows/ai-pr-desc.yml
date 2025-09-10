@@ -91,25 +91,15 @@ jobs:
               diffsText += next;
             }
 
-            const prompt = `
-You are an expert technical writer drafting PR descriptions for a public Docusaurus docs repo.
-
-Write a concise, editable PR description:
-
-- Start with a single-sentence summary.
-- Then 5–10 bullets: what changed, why, notable pages/sections, key files, reviewer checklist.
-- Neutral tone; do not invent beyond provided context.
-
-PR title: ${pr.title}
-Branch: ${pr.head.ref}
-Files changed:
-${fileListText}
-
-Sample diffs (truncated):
-${diffsText}
-            `.trim();
-
-            const response = await fetch('https://api.openai.com/v1/chat/completions', {
+            const prompt = `You are an expert technical writer drafting PR descriptions for a public Docusaurus docs repo. Write a concise, editable PR description:
+            - Start with a single-sentence summary.
+            - Then 5–10 bullets: what changed, why, notable pages/sections, key files, reviewer checklist
+            - Neutral tone; do not invent beyond provided context.
+            PR title: ${pr.title}
+            Branch: ${pr.head.ref}
+            Files changed: ${fileListText}
+            Sample diffs (truncated):${diffsText}
+            `.trim(); const response = await fetch('https://api.openai.com/v1/chat/completions', {
               method: 'POST',
               headers: {
                 'Authorization': `Bearer ${process.env.OPENAI_API_KEY}`,
