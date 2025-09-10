@@ -27,18 +27,26 @@ jobs:
             const MARKER_END = '<!-- ai-pr-desc:end -->';
             const MODEL = 'gpt-4o-mini';
             const MAX_DIFF_CHARS = 15000;
+            const MAX_PATCH_PER_FILE = 1800; // chars fed to LLM per file
 
-            // Determine PR number (PR event or /regen-pr-desc comment)
+            // Figure out intent: PR event, /regen-pr-desc, or /post-to-slack
             let pull_number = null;
+            let actionMode = 'pr'; // 'pr' | 'regen' | 'post_slack'
             if (context.eventName === 'pull_request_target') {
               pull_number = context.payload.pull_request.number;
             } else if (context.eventName === 'issue_comment') {
               if (!context.payload.issue.pull_request) return;
               const body = (context.payload.comment.body || '').toLowerCase();
-              if (!body.includes('/regen-pr-desc')) return;
+              if (body.includes('/regen-pr-desc')) {
+                actionMode = 'regen';
+              } else if (body.includes('/post-to-slack')) {
+                actionMode = 'post_slack';
+              } else {
+                return;
+              }
               pull_number = context.payload.issue.number;
 
-              // Allow PR author or collaborators with write/admin
+              // Gate commands to PR author or collaborators with write/admin
               const commenter = context.payload.comment.user.login;
               const { data: prForPerm } = await github.rest.pulls.get({ ...context.repo, pull_number });
               const isAuthor = commenter === prForPerm.user.login;
@@ -50,7 +58,7 @@ jobs:
                 hasWrite = ['admin','write','maintain'].includes(perm.permission);
               } catch {}
               if (!isAuthor && !hasWrite) {
-                core.notice('Commenter lacks permission to regenerate.');
+                core.notice('Commenter lacks permission.');
                 return;
               }
             } else {
@@ -60,7 +68,7 @@ jobs:
             const { owner, repo } = context.repo;
             const { data: pr } = await github.rest.pulls.get({ owner, repo, pull_number });
 
-            // List changed files (no checkout; safe for forks)
+            // Collect changed files (no checkout; safe for forks)
             const files = await github.paginate(github.rest.pulls.listFiles, {
               owner, repo, pull_number, per_page: 100
             });
@@ -69,14 +77,24 @@ jobs:
               return;
             }
 
+            // Build summaries with trimmed patches
             const fileSummaries = files.map(f => {
-              const line = `- ${f.filename} (${f.status}, +${f.additions}/-${f.deletions})`;
+              const basic = `- ${f.filename} (${f.status}, +${f.additions}/-${f.deletions})`;
               const patch = f.patch || '';
-              const trimmed = patch.length > 2000 ? patch.slice(0, 2000) + '\n[patch trimmed]' : patch;
-              return { basic: line, patch: trimmed };
+              const trimmed = patch.length > MAX_PATCH_PER_FILE
+                ? patch.slice(0, MAX_PATCH_PER_FILE) + '\n[patch trimmed]'
+                : patch;
+              return {
+                filename: f.filename,
+                status: f.status,
+                additions: f.additions,
+                deletions: f.deletions,
+                basic,
+                patch: trimmed
+              };
             });
-            const fileListText = fileSummaries.map(s => s.basic).join('\n');
 
+            // For context, cap total diffs
             let diffsText = '';
             for (const s of fileSummaries) {
               const next = `\n\n---\n${s.basic}\n${s.patch}`;
@@ -87,21 +105,27 @@ jobs:
               diffsText += next;
             }
 
-            const prompt = `You are an expert technical writer drafting PR descriptions for a public Docusaurus docs repo.
-            Write a concise, editable PR description:
-            - Start with a single-sentence summary.
-            - Then 5–10 bullets: what changed, why, notable pages/sections, key files, reviewer checklist.
-            - Neutral tone; do not invent beyond provided context.
-            PR title: ${pr.title}
-            Branch: ${pr.head.ref}
-            Files changed:
-            ${fileListText}
-            Sample diffs (truncated):
-            ${diffsText}
-            `.trim();
+            // Heuristic TLDR if LLM not available
+            function firstAddedLine(patch) {
+              if (!patch) return '';
+              for (const line of patch.split('\n')) {
+                if (line.startsWith('+++') || line.startsWith('---')) continue;
+                if (line.startsWith('+')) {
+                  const content = line.slice(1).trim();
+                  if (content) return content.replace(/\s+/g, ' ').slice(0, 120);
+                }
+              }
+              return '';
+            }
+            function heuristicTldr(s) {
+              const snippet = firstAddedLine(s.patch);
+              if (snippet) return `Update: ${snippet}`.slice(0, 150);
+              return `Modified (+${s.additions}/-${s.deletions})`.slice(0, 150);
+            }
 
-            async function callOpenAI(prompt) {
-              if (!process.env.OPENAI_API_KEY) return '';
+            // LLM calls
+            async function callOpenAIJson(prompt) {
+              if (!process.env.OPENAI_API_KEY) return null;
               try {
                 const r = await fetch('https://api.openai.com/v1/chat/completions', {
                   method: 'POST',
@@ -111,30 +135,32 @@ jobs:
                   },
                   body: JSON.stringify({
                     model: MODEL,
-                    temperature: 0.3,
-                    max_tokens: 700,
+                    temperature: 0.2,
+                    max_tokens: 900,
+                    response_format: { type: 'json_object' },
                     messages: [
-                      { role: 'system', content: 'You write concise, high-quality PR descriptions for documentation changes.' },
+                      { role: 'system', content: 'You produce strict JSON according to user schema. No extra text.' },
                       { role: 'user', content: prompt }
                     ]
                   })
                 });
                 if (!r.ok) {
-                  core.notice(`OpenAI call failed: ${await r.text()}`.slice(0, 500));
-                  return '';
+                  core.notice(`OpenAI failed: ${await r.text()}`.slice(0, 500));
+                  return null;
                 }
                 const j = await r.json();
-                return j.choices?.[0]?.message?.content?.trim() || '';
+                const txt = j.choices?.[0]?.message?.content?.trim();
+                if (!txt) return null;
+                return JSON.parse(txt);
               } catch (e) {
                 core.notice(`OpenAI error: ${String(e).slice(0, 300)}`);
-                return '';
+                return null;
               }
             }
 
-            async function callGitHubModels(prompt) {
-              if (!process.env.GITHUB_MODELS_TOKEN) return '';
+            async function callGitHubModelsJson(prompt) {
+              if (!process.env.GITHUB_MODELS_TOKEN) return null;
               try {
-                // GitHub Models (OpenAI-compatible). Requires org/account enablement.
                 const r = await fetch('https://models.inference.ai.azure.com/openai/deployments/gpt-4o-mini/chat/completions?api-version=2024-06-01', {
                   method: 'POST',
                   headers: {
@@ -142,71 +168,136 @@ jobs:
                     'Content-Type': 'application/json'
                   },
                   body: JSON.stringify({
-                    temperature: 0.3,
-                    max_tokens: 700,
+                    temperature: 0.2,
+                    max_tokens: 900,
+                    response_format: { type: 'json_object' },
                     messages: [
-                      { role: 'system', content: 'You write concise, high-quality PR descriptions for documentation changes.' },
+                      { role: 'system', content: 'You produce strict JSON according to user schema. No extra text.' },
                       { role: 'user', content: prompt }
                     ]
                   })
                 });
                 if (!r.ok) {
-                  core.notice(`GitHub Models call failed: ${await r.text()}`.slice(0, 500));
-                  return '';
+                  core.notice(`GitHub Models failed: ${await r.text()}`.slice(0, 500));
+                  return null;
                 }
                 const j = await r.json();
-                return j.choices?.[0]?.message?.content?.trim() || '';
+                const txt = j.choices?.[0]?.message?.content?.trim();
+                if (!txt) return null;
+                return JSON.parse(txt);
               } catch (e) {
                 core.notice(`GitHub Models error: ${String(e).slice(0, 300)}`);
-                return '';
+                return null;
               }
             }
 
-            function buildFallbackDescription() {
-              const checklist = [
-                '- [ ] Pages render locally (Docusaurus build passes)',
-                '- [ ] Links resolve (no broken anchors)',
-                '- [ ] Technical accuracy verified',
-                '- [ ] Style/tone aligns with docs guidelines'
-              ].join('\n');
+            // Build JSON prompt for per-file TLDRs (<150 chars) + overall (<120)
+            const jsonPrompt = `
+Return ONLY valid JSON with this schema:
+{
+  "overall": "one-sentence overall summary, <=120 chars",
+  "files": [
+    {"file": "path/filename", "tldr": "what changed in this file, <=150 chars"}
+  ]
+}
+Context:
+PR title: ${pr.title}
+Branch: ${pr.head.ref}
 
-              return [
-                'Summary: Documentation updates based on the files below.',
-                '',
-                'Changes:',
-                fileListText,
-                '',
-                'Reviewer checklist:',
-                checklist
-              ].join('\n');
+Files changed:
+${fileSummaries.map(s => `${s.filename} (${s.status}, +${s.additions}/-${s.deletions})`).join('\n')}
+
+Sample diffs per file (truncated):
+${fileSummaries.map(s => `FILE: ${s.filename}\n${s.patch}`).join('\n\n-----\n')}
+`.trim();
+            // Try to get structured TLDRs
+            let structured = await callOpenAIJson(jsonPrompt);
+            if (!structured) structured = await callGitHubModelsJson(jsonPrompt);
+
+            // Compose per-file bullets
+            let overall = structured?.overall && typeof structured.overall === 'string'
+              ? structured.overall.slice(0, 200)
+              : 'Documentation updates based on the files below.';
+
+            const fileTldrs = new Map();
+            if (structured?.files && Array.isArray(structured.files)) {
+              for (const item of structured.files) {
+                if (item?.file && item?.tldr) {
+                  fileTldrs.set(item.file, String(item.tldr).slice(0, 150));
+                }
+              }
+            }
+            const perFileBullets = fileSummaries.map(s => {
+              const t = fileTldrs.get(s.filename) || heuristicTldr(s);
+              const fileUrl = `${pr.head.repo.html_url}/blob/${pr.head.sha}/${s.filename}`;
+              return `- ${s.filename}: ${t}\n  (${fileUrl})`;
+            }).join('\n');
+
+            // Build PR body AI section
+            const badgeLink = `${pr.html_url}#issuecomment-new`;
+            const aiBody = [
+              `Overall: ${overall}`,
+              '',
+              `Files changed (${fileSummaries.length}):`,
+              perFileBullets,
+              '',
+              `[![Post to Slack](https://img.shields.io/badge/Post_to_Slack-4A154B?logo=slack&logoColor=white)](${badgeLink})`,
+              '',
+              'Reviewer checklist:',
+              '- [ ] Pages render locally (Docusaurus build passes)',
+              '- [ ] Links resolve (no broken anchors)',
+              '- [ ] Technical accuracy verified',
+              '- [ ] Style/tone aligns with docs guidelines',
+              '',
+              '_Tip: To post this summary to Slack, add a PR comment: `/post-to-slack`._'
+            ].join('\n');
+
+            if (actionMode === 'post_slack') {
+              // Post to Slack using same structured summary
+              if (!process.env.SLACK_WEBHOOK_URL) {
+                core.notice('SLACK_WEBHOOK_URL not set.');
+              } else {
+                const slackText = [
+                  `PR review request: ${pr.title}`,
+                  pr.html_url,
+                  '',
+                  `Overall: ${overall}`,
+                  '',
+                  'Files:',
+                  ...perFileBullets.split('\n').slice(0, Math.min(20, perFileBullets.split('\n').length))
+                ].join('\n');
+                try {
+                  await fetch(process.env.SLACK_WEBHOOK_URL, {
+                    method: 'POST',
+                    headers: { 'Content-Type': 'application/json' },
+                    body: JSON.stringify({ text: slackText })
+                  });
+                } catch (e) {
+                  core.notice(`Slack post failed: ${String(e).slice(0, 300)}`);
+                }
+              }
+              return; // don't modify PR body when only posting to Slack
             }
 
-            // Try OpenAI first; if quota/misconfig, fall back to GitHub Models; else static template
-            let aiText = await callOpenAI(prompt);
-            if (!aiText) {
-              aiText = await callGitHubModels(prompt);
-            }
-            if (!aiText) {
-              core.notice('Both LLM providers unavailable; using fallback template.');
-              aiText = buildFallbackDescription();
-            }
-
-            const aiSection = `${MARKER_START}\n\n${aiText}\n\n${MARKER_END}`;
+            // Default or /regen-pr-desc: update PR body within markers
+            const aiSection = `${MARKER_START}\n\n${aiBody}\n\n${MARKER_END}`;
             const existingBody = pr.body || '';
             let newBody;
 
+            const isOpenAction = context.eventName === 'pull_request_target' &&
+              ['opened','reopened','ready_for_review'].includes(context.payload.action);
+
             if (!existingBody) {
               newBody = aiSection + '\n\n' +
-                '_Note: This AI Suggested Description is editable. Use `/regen-pr-desc` to refresh._';
+                '_Note: This AI Suggested Description is editable. Use `/regen-pr-desc` to refresh, `/post-to-slack` to notify Slack._';
             } else if (existingBody.includes(MARKER_START) && existingBody.includes(MARKER_END)) {
               newBody = existingBody.replace(
                 new RegExp(`${MARKER_START}[\\s\\S]*?${MARKER_END}`),
                 aiSection
               );
-            } else if (context.eventName === 'pull_request_target' &&
-                       ['opened','reopened','ready_for_review'].includes(context.payload.action)) {
+            } else if (isOpenAction) {
               newBody = existingBody + '\n\n' + aiSection;
-            } else if (context.eventName === 'issue_comment') {
+            } else if (actionMode === 'regen') {
               newBody = existingBody + '\n\n' + aiSection;
             } else {
               core.notice('PR body exists without AI markers; skipping update.');
@@ -218,15 +309,22 @@ jobs:
               core.info('PR description updated.');
             }
 
-            // Optional Slack ping
-            if (process.env.SLACK_WEBHOOK_URL) {
-              const prUrl = pr.html_url;
-              const text = `PR review request: ${pr.title}\n${prUrl}\n\nAI summary:\n${aiText}`;
+            // Optional auto Slack ping on open
+            if (process.env.SLACK_WEBHOOK_URL && isOpenAction) {
+              const slackText = [
+              `PR review request: ${pr.title}`,
+                pr.html_url,
+                '',
+                `Overall: ${overall}`,
+                '',
+                'Files:',
+                ...perFileBullets.split('\n').slice(0, Math.min(20, perFileBullets.split('\n').length))
+              ].join('\n');
               try {
                 await fetch(process.env.SLACK_WEBHOOK_URL, {
                   method: 'POST',
                   headers: { 'Content-Type': 'application/json' },
-                  body: JSON.stringify({ text })
+                  body: JSON.stringify({ text: slackText })
                 });
               } catch (e) {
                 core.notice(`Slack post failed: ${String(e).slice(0, 300)}`);
